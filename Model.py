@@ -1,26 +1,26 @@
 import keyboard
 import os
 import json
-import time
 
-# Data Formatting
-#
-# {
-#   name: 'name',
-#   description: 'description',
-#   depth: 2,
-#   sequences: {
-#       aa: {
-#           r: 10
-#       }
-#   }
-#   shortSequence: {
-#       a: {
-#           b: 3
-#       }
-#   }
-# }
-letterFrequencies = {
+from Sequence import Sequence
+
+'''  Data Formatting v3
+
+{
+  name: "name",
+  description: "description",
+  maxDepth: 2,
+  minAcceptableDatapoints = 2
+  acceptedKeyNames: {}
+  sequences: {
+    a: {b: 2, c: 4},
+    aa: {a: 4, c: 1}
+  },
+}
+
+'''
+
+letterFrequencies = Sequence("Standard letter frequencies", {
     "e": 0.12702,
     "t": 0.09056,
     "a": 0.08167,
@@ -47,9 +47,9 @@ letterFrequencies = {
     "x": 0.0015,
     "q": 0.00095,
     "z": 0.00074,
-}
+})
 
-acceptedKeyNames = [
+singleCharKeyNames = [
     "space",
     "q",
     "w",
@@ -122,23 +122,22 @@ acceptedKeyNames = [
 ]
 
 class KeypressProbabilitiesModel:
-    def __init__(self, name, description='', depth=2, modelDir='./models'):
+    def __init__(self, name, description="", maxDepth=2, modelDir="./models", acceptedKeyNames=singleCharKeyNames, minAcceptableDatapoints=2):
         '''
         Fetches model data from it's model file if present. Otherwise, 
-        it creates a new model. If a model is stored away from './models',
-        modelDir must be provided in order to load the model.
+        it creates a new model. If a model is stored away from "./models",
+        modelDir must be provided in order to load the model. All arguments
+        but the name will be overwriten by the saved file if such exists.
         '''
         self.name = name
         self.modelDir = modelDir
 
         self.trainingWithKeyboard = False
         self.listening = False
-        self.sendingProbabilities = False
+        self.sendingSequenceData = False
         self.callbackFunctions = []
-        self.acceptedKeyNames = acceptedKeyNames
         self.prevSet = ""
         self.letterFrequencies = letterFrequencies
-        self.minAcceptableDatapointCount = 10
 
         if not os.path.isdir(modelDir):
             print("Models folder not found.")
@@ -147,67 +146,42 @@ class KeypressProbabilitiesModel:
 
         files = os.listdir(modelDir)
                     
-        if f'{name}.json' in files:
-            with open(f'{self.modelDir}/{name}.json') as file:
+        if f"{name}.json" in files:
+            with open(f"{self.modelDir}/{name}.json") as file:
                 data = json.load(file)
 
             self.description = data["description"]
-            self.depth = data["depth"]
-            self.rawSequenceData = data["sequences"]
-            self.reducedSequenceData = self.reduce_sequence_data(self.rawSequenceData)
-            self.rawShortSequenceData = data["shortSequences"]
-            self.reducedShortSequenceData = self.reduce_sequence_data(self.rawShortSequenceData)
+            self.maxDepth = data["maxDepth"]
+            self.sequenceData = {sequence: Sequence(sequence, result) for sequence, result in data["sequences"].items()}
+            self.minAcceptableDatapoints = data["minAcceptableDatapoints"]
+            self.acceptedKeyNames = data["acceptedKeyNames"]
         else:
             self.description = description
-            self.depth = depth
-            self.rawSequenceData = {}
-            self.reducedSequenceData = {}
-            self.rawShortSequenceData = {}
-            self.reducedShortSequenceData = {}
-    
-    def reduce_sequence_data(self, rawSequenceData):
-        reducedSequenceData = {}
-        for previousSet, letterProbabilities in rawSequenceData.items():
-            totalInstancesRecorded = sum(letterProbabilities.values())
-            potentialLettersReduced = {posibility: (instancesRecorded / totalInstancesRecorded) for posibility, instancesRecorded in letterProbabilities.items()}
-            reducedSequenceData[previousSet] = potentialLettersReduced
-        return reducedSequenceData
+            self.maxDepth = maxDepth
+            self.sequenceData = {}
+            self.minAcceptableDatapoints = minAcceptableDatapoints
+            self.acceptedKeyNames = acceptedKeyNames
 
     def train_with_text(self, text):
         '''
         Uses a passed string to train the model
         '''
+
         text = text.lower()
         print("training model on text")
 
-        for i in range(self.depth, len(text)):
+        for i in range(self.maxDepth, len(text)):
             letter = text[i]
-            prevSet = text[i-self.depth:i]
-            # print("i:", i)
-            # print("self.depth:", self.depth)
-            # print("letter:", letter)
-            # print("prevSet:", prevSet)
+            prevSet = text[i-self.maxDepth:i]
             self.add_to_sequence_data(letter, prevSet)
-
-        self.reducedSequenceData = self.reduce_sequence_data(self.rawSequenceData)
-        self.reducedShortSequenceData = self.reduce_sequence_data(self.rawShortSequenceData)
     
     def add_to_sequence_data(self, letter, prevSet):
-        prevLetter = prevSet[-1]
-        
-        if not prevSet in self.rawSequenceData.keys():
-            self.rawSequenceData[prevSet] = {letter: 1}
-        elif not letter in self.rawSequenceData[prevSet].keys():
-            self.rawSequenceData[prevSet].update({letter: 1})
-        else:
-            self.rawSequenceData[prevSet][letter] += 1
-            
-        if not prevLetter in self.rawShortSequenceData.keys():
-            self.rawShortSequenceData[prevLetter] = {letter: 1}
-        elif not letter in self.rawShortSequenceData[prevLetter].keys():
-            self.rawShortSequenceData[prevLetter].update({letter: 1})
-        else:
-            self.rawShortSequenceData[prevLetter][letter] += 1
+        for depth in range(1, self.maxDepth+1):
+            prevSetAtDepth = prevSet[(self.maxDepth - depth) - 1:]
+            if not prevSetAtDepth in self.sequenceData.keys():
+                self.sequenceData[prevSetAtDepth] = Sequence(prevSetAtDepth, {letter: 1})
+            else:
+                self.sequenceData[prevSetAtDepth].addDataPoint(letter)
     
     def save_model(self):
         '''
@@ -217,29 +191,26 @@ class KeypressProbabilitiesModel:
         modelObject = {
             "name": self.name,
             "description": self.description,
-            "depth": self.depth,
-            "sequences": self.rawSequenceData,
-            "shortSequences": self.rawShortSequenceData
+            "maxDepth": self.maxDepth,
+            "minAcceptableDatapoints": self.minAcceptableDatapoints,
+            "acceptedKeyNames": self.acceptedKeyNames,
+            "sequences": {sequence: data.rawData for sequence, data in self.sequenceData.items()}
         }
 
-        with open(f'{self.modelDir}/{self.name}.json', 'w') as file:
+        with open(f"{self.modelDir}/{self.name}.json", "w") as file:
             json.dump(modelObject, file, indent=2)
 
-    def get_next_keypress_probabilities(self, prevSet):
+    def get_sequence_data(self, prevSet):
+        for nDepth in range(-len(prevSet), 0):
+            prevSetAtDepth = prevSet[nDepth:]
+            if prevSetAtDepth in self.sequenceData.keys() and \
+                self.sequenceData[prevSetAtDepth].datapoints >= self.minAcceptableDatapoints:
+                return self.sequenceData[prevSetAtDepth]
         
-        if prevSet in self.rawSequenceData.keys() and \
-            sum(self.rawSequenceData[prevSet].values()) >= self.minAcceptableDatapointCount:
-            return self.reducedSequenceData[prevSet]
-        
-        lastLetter = prevSet[-1]
-        if lastLetter in self.rawShortSequenceData.keys() and \
-            sum(self.rawShortSequenceData[lastLetter].values()) >= self.minAcceptableDatapointCount:
-            # print(self.reducedShortSequenceData)
-            return self.reducedShortSequenceData[lastLetter]
         return self.letterFrequencies
     
     def handle_key_press(self, event):
-        print("\033c", end='')
+        print("\033c", end="")
         currentCharName = event.name.lower()
         print(currentCharName)
 
@@ -247,25 +218,23 @@ class KeypressProbabilitiesModel:
             print("in acceptedKeyNames")
             char = " " if currentCharName == "space" else currentCharName
 
-            if self.trainingWithKeyboard:
-                if len(self.prevSet) == self.depth:
-                    self.add_to_sequence_data(char, self.prevSet)
-                    self.reducedSequenceData = self.reduce_sequence_data(self.rawSequenceData)
-                    self.reducedShortSequenceData = self.reduce_sequence_data(self.rawShortSequenceData)
+            if self.trainingWithKeyboard and \
+                len(self.prevSet) == self.maxDepth:
+                self.add_to_sequence_data(char, self.prevSet)
 
-            if len(self.prevSet) < self.depth:
-                print("prevSet < depth")
+            if len(self.prevSet) < self.maxDepth:
+                print("prevSet < maxDepth")
                 self.prevSet += char
             else:
-                print("prevSet == or > depth")
+                print("prevSet == or > maxDepth")
                 self.prevSet = self.prevSet[1:] + char
             
-            if self.sendingProbabilities:
+            if self.sendingSequenceData:
                 print(self.prevSet)
-                probabilities = self.get_next_keypress_probabilities(self.prevSet)
+                sequence = self.get_sequence_data(self.prevSet)
                 
                 for callback in self.callbackFunctions:
-                    callback(probabilities)
+                    callback(sequence)
     
     def start_listening(self):
         '''
@@ -281,40 +250,18 @@ class KeypressProbabilitiesModel:
 
         print("listening")
     
-    def send_probabilities_on_keypress(self, callback):
+    def send_sequence_data_on_keypress(self, callback):
         '''
-        Passes the callback function a function with next letter probabilities
+        Passes the callback function a dictionary with next letter probabilities
         '''
         if not self.listening:
             self.start_listening()
         
         self.callbackFunctions.append(callback)
-        self.sendingProbabilities = True
+        self.sendingSequenceData = True
     
     def start_training_on_keypress(self):
         if not self.listening:
             self.start_listening()
         
         self.trainingWithKeyboard = True
-
-
-a = KeypressProbabilitiesModel('v2-3.20.24', 'version trained on key inputs on 3.20.24 depth of 3', 3)
-print("name:", a.name)
-# with open('./trainingData/parsedNet.txt') as f:
-#     text = f.readline()
-#     a.train_with_text(text)
-# a.save_model()
-
-a.send_probabilities_on_keypress(lambda prob: print(str(prob).replace(", '", ",\n'")))
-a.start_training_on_keypress()
-
-end = False
-def stop(x):
-    global end
-    end = True
-
-keyboard.on_press_key('f6', lambda x: a.save_model())
-keyboard.on_press_key('f7', stop)
-
-while not end:
-    time.sleep(0.5)
